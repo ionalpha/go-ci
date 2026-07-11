@@ -1,0 +1,6 @@
+# Shared gitleaks config for ionalpha Go repositories. Single source of truth, consumed by
+# the reusable go-ci workflow so the secret-scan ruleset never drifts between repos. Keeps
+# the full default ruleset; a repo that needs to allowlist an intentional test canary layers
+# its own allowlist on top rather than editing this file.
+[extend]
+useDefault = true

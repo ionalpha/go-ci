@@ -1,0 +1,171 @@
+name: Go CI (reusable)
+
+# The single, shared CI gate for ionalpha Go repositories. A consuming repo adds a thin
+# caller workflow (`uses: ionalpha/flynn-ci/.github/workflows/go-ci.yml@<ref>`) instead of
+# copying job logic, so the lint/test/scan gates are defined once and can never drift or
+# silently weaken between repos. Shared golangci-lint and gitleaks config live in this same
+# repo and are checked out at run time, so config is unified with the workflow.
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        description: Go toolchain version.
+        type: string
+        default: "1.26"
+      platforms:
+        description: JSON array of runner OSes to test on.
+        type: string
+        default: '["ubuntu-latest","macos-latest","windows-latest"]'
+      ci-ref:
+        description: Ref of ionalpha/flynn-ci to load shared config from. Pin it to match the workflow ref you call.
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+# Use bash on every OS (including Windows) so command parsing is identical; Windows runners
+# default `run:` to PowerShell, which mangles native args like `-coverprofile=coverage.out`.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: Lint & format
+    runs-on: ubuntu-latest
+    steps:
+      # Actions are pinned to a full commit SHA (kept current by the consumer's Dependabot).
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      # The shared golangci-lint config, checked out beside the caller's code so one file
+      # governs every repo. golangci-lint runs from the workspace root against it.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: ionalpha/flynn-ci
+          ref: ${{ inputs.ci-ref }}
+          path: .flynn-ci
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ inputs.go-version }}
+          # `1.x` alone resolves to whatever patch the runner cached, so a stdlib advisory
+          # fix is never picked up; check-latest queries the newest matching patch each run.
+          check-latest: true
+      - name: go mod tidy leaves go.mod and go.sum unchanged
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      # Install golangci-lint from source at the pinned version and invoke it directly with
+      # the shared config. go install verifies the module against the Go checksum database
+      # (reproducible, tamper-evident), and calling the binary ourselves keeps the config
+      # path explicit rather than depending on an action's config-discovery or flag surface.
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
+      # Lint the host target, then cross-target windows and darwin so build-tagged platform
+      # files (_windows.go, _darwin.go) are analyzed too. CGO off so a cgo-only dependency
+      # does not need a C cross toolchain on the Linux runner.
+      - name: Lint (host + cross-platform)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          golangci="$(go env GOPATH)/bin/golangci-lint"
+          "$golangci" run --config=.flynn-ci/.golangci.yml
+          GOOS=windows "$golangci" run --config=.flynn-ci/.golangci.yml
+          GOOS=darwin "$golangci" run --config=.flynn-ci/.golangci.yml
+
+  test:
+    name: Test (${{ matrix.os }} / Go ${{ inputs.go-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.platforms) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ inputs.go-version }}
+          check-latest: true
+      # Windows Defender scans every file the Go toolchain writes; excluding the workspace
+      # and caches keeps go test from being several times slower. Windows-only, best-effort.
+      - name: Exclude Go paths from Windows Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$(go env GOCACHE)", "$(go env GOMODCACHE)", "$env:RUNNER_TEMP" -ErrorAction Stop
+          } catch {
+            Write-Host "Could not set Defender exclusions (continuing): $_"
+          }
+      # go vet compiles every package for this OS, so a platform build break fails here; go
+      # test then builds and runs the suite under the race detector, which is the point of
+      # this gate.
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  vuln:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ inputs.go-version }}
+          check-latest: true
+      # govulncheck reports a Go/stdlib vulnerability only when the vulnerable symbol is
+      # actually reachable, so a green result is meaningful, not just present-in-go.sum.
+      - run: |
+          go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
+          "$(go env GOPATH)/bin/govulncheck" ./...
+
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      # Full history, not just the tip: a secret committed and later removed still lives in
+      # history, which is what an attacker reads. fetch-depth 0 pulls every commit.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: ionalpha/flynn-ci
+          ref: ${{ inputs.ci-ref }}
+          path: .flynn-ci
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ inputs.go-version }}
+          check-latest: true
+      # go install verifies the module against the Go checksum database, so the tool is
+      # reproducible and tamper-evident. The shared config keeps the ruleset unified.
+      - run: |
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
+          "$(go env GOPATH)/bin/gitleaks" git --config=.flynn-ci/.gitleaks.toml --no-banner .
+
+  # A single, stable gate to require in branch protection. It depends on the real jobs
+  # rather than naming a matrix leg, so the OS/Go set can change without editing the
+  # required-checks list. A skipped or cancelled required job is NOT a pass.
+  ci-success:
+    name: CI success
+    if: always()
+    needs: [lint, test, vuln, secrets]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify every required job succeeded
+        env:
+          RESULTS: >-
+            lint=${{ needs.lint.result }}
+            test=${{ needs.test.result }}
+            vuln=${{ needs.vuln.result }}
+            secrets=${{ needs.secrets.result }}
+        run: |
+          failed=0
+          for entry in $RESULTS; do
+            job=${entry%%=*}
+            result=${entry#*=}
+            if [ "$result" != "success" ]; then
+              echo "::error::Required job '$job' did not succeed (result: $result)."
+              failed=1
+            fi
+          done
+          [ "$failed" -eq 0 ] || exit 1
+          echo "Every required CI job ran and succeeded."

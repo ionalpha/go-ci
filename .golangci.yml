@@ -1,0 +1,74 @@
+# Shared golangci-lint config for ionalpha Go repositories (flynn, flynn-extensions, ...).
+# This is the single source of truth: consuming repos do NOT keep their own copy - the
+# reusable go-ci workflow checks this repo out and points golangci-lint at this file, so
+# the gate can never drift between repos. Keep only rules that apply to EVERY ionalpha Go
+# module; repo-specific architecture rules (a repo's own layer/egress boundaries) belong in
+# that repo, layered on top, not here.
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  enable:
+    - bodyclose
+    - copyloopvar
+    - errcheck
+    - errname
+    - errorlint
+    - exhaustive
+    - gocyclo
+    - godot
+    - gosec
+    - govet
+    - ineffassign
+    - intrange
+    - makezero
+    - misspell
+    - nilerr
+    - perfsprint
+    - predeclared
+    - revive
+    - staticcheck
+    - unconvert
+    - unused
+    - wastedassign
+    - whitespace
+  settings:
+    exhaustive:
+      # A switch with a default case is exhaustive: the default deliberately covers the
+      # remaining enum values. Switches without a default are still checked.
+      default-signifies-exhaustive: true
+    gocyclo:
+      min-complexity: 45
+  exclusions:
+    rules:
+      # gosec's file-permission and file-inclusion rules target production code; test
+      # fixtures (temp dirs, reading the module's own sources) are not a threat surface.
+      - linters:
+          - gosec
+        path: _test\.go
+      # The _windows.go files are thin syscall shims where passing a Go pointer to a
+      # syscall and sizing a struct for a call is the documented calling convention, not a
+      # memory-safety or overflow risk. The real errcheck/staticcheck/revive findings still apply.
+      - linters:
+          - gosec
+        path: _windows\.go
+        text: 'G103|G115'
+      # A test switch deliberately handles only the cases it exercises; enum
+      # exhaustiveness is a production-code concern.
+      - linters:
+          - exhaustive
+        path: _test\.go
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      # Org-level prefix groups every ionalpha module's imports together, so one shared
+      # config works for flynn, flynn-extensions, and future repos without per-repo edits.
+      local-prefixes:
+        - github.com/ionalpha
