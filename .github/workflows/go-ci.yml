@@ -1,7 +1,7 @@
 name: Go CI (reusable)
 
 # The single, shared CI gate for ionalpha Go repositories. A consuming repo adds a thin
-# caller workflow (`uses: ionalpha/flynn-ci/.github/workflows/go-ci.yml@<ref>`) instead of
+# caller workflow (`uses: ionalpha/go-ci/.github/workflows/go-ci.yml@<ref>`) instead of
 # copying job logic, so the lint/test/scan gates are defined once and can never drift or
 # silently weaken between repos. Shared golangci-lint and gitleaks config live in this same
 # repo and are checked out at run time, so config is unified with the workflow.
@@ -17,7 +17,7 @@ on:
         type: string
         default: '["ubuntu-latest","macos-latest","windows-latest"]'
       ci-ref:
-        description: Ref of ionalpha/flynn-ci to load shared config from. Pin it to match the workflow ref you call.
+        description: Ref of ionalpha/go-ci to load shared config from. Pin it to match the workflow ref you call.
         type: string
         default: main
 
@@ -41,9 +41,9 @@ jobs:
       # governs every repo. golangci-lint runs from the workspace root against it.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          repository: ionalpha/flynn-ci
+          repository: ionalpha/go-ci
           ref: ${{ inputs.ci-ref }}
-          path: .flynn-ci
+          path: .go-ci
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ inputs.go-version }}
@@ -68,9 +68,9 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           golangci="$(go env GOPATH)/bin/golangci-lint"
-          "$golangci" run --config=.flynn-ci/.golangci.yml
-          GOOS=windows "$golangci" run --config=.flynn-ci/.golangci.yml
-          GOOS=darwin "$golangci" run --config=.flynn-ci/.golangci.yml
+          "$golangci" run --config=.go-ci/.golangci.yml
+          GOOS=windows "$golangci" run --config=.go-ci/.golangci.yml
+          GOOS=darwin "$golangci" run --config=.go-ci/.golangci.yml
 
   test:
     name: Test (${{ matrix.os }} / Go ${{ inputs.go-version }})
@@ -128,9 +128,9 @@ jobs:
           fetch-depth: 0
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
-          repository: ionalpha/flynn-ci
+          repository: ionalpha/go-ci
           ref: ${{ inputs.ci-ref }}
-          path: .flynn-ci
+          path: .go-ci
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ inputs.go-version }}
@@ -139,18 +139,43 @@ jobs:
       # reproducible and tamper-evident. The shared config keeps the ruleset unified.
       - run: |
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
-          "$(go env GOPATH)/bin/gitleaks" git --config=.flynn-ci/.gitleaks.toml --no-banner .
+          "$(go env GOPATH)/bin/gitleaks" git --config=.go-ci/.gitleaks.toml --no-banner .
+
+  # Enforce the PR template at the gate, so a PR opened any way (gh, the web UI, the API)
+  # carries the required sections. The body comes from the event payload via env, never
+  # interpolated into the script, so a crafted body cannot inject shell. Skipped on push.
+  pr-body:
+    name: PR body follows template
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require template sections
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          missing=0
+          for section in "## What" "## Why" "## How to verify"; do
+            case "$BODY" in
+              *"$section"*) ;;
+              *) echo "::error::PR body is missing the '$section' section."; missing=1 ;;
+            esac
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Base the description on .github/PULL_REQUEST_TEMPLATE.md (What / Why / How to verify)."
+            exit 1
+          fi
+          echo "PR body contains all required template sections."
 
   # A single, stable gate to require in branch protection. It depends on the real jobs
   # rather than naming a matrix leg, so the OS/Go set can change without editing the
-  # required-checks list. A skipped or cancelled required job is NOT a pass.
+  # required-checks list. A failed or cancelled required job fails this gate.
   ci-success:
     name: CI success
     if: always()
-    needs: [lint, test, vuln, secrets]
+    needs: [lint, test, vuln, secrets, pr-body]
     runs-on: ubuntu-latest
     steps:
-      - name: Verify every required job succeeded
+      - name: Verify the always-on jobs succeeded
         env:
           RESULTS: >-
             lint=${{ needs.lint.result }}
@@ -168,4 +193,10 @@ jobs:
             fi
           done
           [ "$failed" -eq 0 ] || exit 1
-          echo "Every required CI job ran and succeeded."
+      # pr-body runs only on a pull request; require it there, allow its skip on push.
+      - name: Verify the PR body gate on pull requests
+        if: ${{ github.event_name == 'pull_request' && needs.pr-body.result != 'success' }}
+        run: |
+          echo "::error::The PR body gate did not succeed (result: ${{ needs.pr-body.result }})."
+          exit 1
+      - run: echo "Every required CI job ran and succeeded."

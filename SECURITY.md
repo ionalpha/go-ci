@@ -4,7 +4,7 @@
 
 Please report security issues **privately**. Do not open a public issue or pull request.
 
-- Use GitHub's [private vulnerability reporting](https://github.com/ionalpha/flynn-ci/security/advisories/new)
+- Use GitHub's [private vulnerability reporting](https://github.com/ionalpha/go-ci/security/advisories/new)
   ("Report a vulnerability" under the Security tab), or
 - email **contact@ionalpha.io**.
 

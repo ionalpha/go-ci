@@ -1,0 +1,34 @@
+name: CodeQL (reusable)
+
+# Shared CodeQL analysis for ionalpha Go repos. A consumer adds a thin caller with the
+# push/pull_request/schedule triggers and grants security-events: write; the analysis logic
+# lives here once so every repo runs the same scan.
+on:
+  workflow_call:
+    inputs:
+      languages:
+        description: JSON array of CodeQL languages to analyze.
+        type: string
+        default: '["go","actions"]'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language: ${{ fromJSON(inputs.languages) }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: github/codeql-action/init@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          languages: ${{ matrix.language }}
+      - uses: github/codeql-action/autobuild@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+      - uses: github/codeql-action/analyze@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4

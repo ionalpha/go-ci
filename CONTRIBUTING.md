@@ -1,6 +1,6 @@
 # Contributing
 
-flynn-ci holds the **shared** CI for ionalpha Go repositories: the reusable
+go-ci holds the **shared** CI for ionalpha Go repositories: the reusable
 `go-ci` workflow and the golangci-lint / gitleaks config every consumer runs. A change here
 changes the gate for `flynn`, `flynn-extensions`, and future repos at once, so treat it with
 care.
@@ -14,7 +14,7 @@ care.
    Tool versions (golangci-lint, gitleaks, govulncheck) are pinned too.
 4. **Prove it against a consumer.** Before changing the workflow, run it against a real
    consumer branch (open a draft PR in `flynn-extensions` that points its caller at your
-   branch: `uses: ionalpha/flynn-ci/.github/workflows/go-ci.yml@<your-branch>`), and confirm
+   branch: `uses: ionalpha/go-ci/.github/workflows/go-ci.yml@<your-branch>`), and confirm
    it is green.
 5. **Sign off with DCO:** `git commit -s`, and use Conventional Commits.
 
