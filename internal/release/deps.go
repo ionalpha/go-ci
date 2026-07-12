@@ -97,7 +97,7 @@ func Scope(ctx context.Context, dir string, c Component, manifestPath string) (S
 			}
 			// Restrict to packages inside this module's tree. A dependency in the
 			// module cache lives outside modRoot and is tracked via go.sum instead.
-			rel, err := filepath.Rel(modRoot, pkg.Dir)
+			rel, err := filepath.Rel(modRoot, resolveSymlinks(pkg.Dir))
 			if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 				continue
 			}
@@ -113,7 +113,7 @@ func Scope(ctx context.Context, dir string, c Component, manifestPath string) (S
 		scope.Dirs = append(scope.Dirs, d)
 	}
 	if manifestPath != "" {
-		if rel, err := filepath.Rel(modRoot, manifestPath); err == nil {
+		if rel, err := filepath.Rel(modRoot, resolveSymlinks(manifestPath)); err == nil {
 			scope.Files = append(scope.Files, filepath.ToSlash(rel))
 		}
 	}
@@ -169,7 +169,23 @@ func moduleRoot(ctx context.Context, dir string) (root, modPath string, err erro
 	if !ok {
 		return "", "", fmt.Errorf("resolve module root: unexpected output %q", out)
 	}
-	return root, modPath, nil
+	return resolveSymlinks(root), modPath, nil
+}
+
+// resolveSymlinks canonicalizes a path so two paths naming the same directory compare
+// equal.
+//
+// It matters because the module root and a package directory do not always arrive in the
+// same form. On macOS, for instance, a path under /var/folders is a symlink into
+// /private/var/folders, and `go list` reports the resolved form; comparing that against an
+// unresolved root makes every package look like it lives outside the module, and the scope
+// silently comes back empty. A path that cannot be resolved (it may not exist yet) is
+// returned unchanged, since the comparison is no worse off than before.
+func resolveSymlinks(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	return p
 }
 
 func dedupe(in []string) []string {
