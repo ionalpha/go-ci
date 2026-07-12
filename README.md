@@ -212,6 +212,35 @@ set `ci-ref` to the same ref, so a change here is adopted deliberately, never si
 actions inside this workflow are already pinned to commit SHAs and kept current by Dependabot
 in the consuming repos.
 
+## Identity guards
+
+Two tracked hooks (`.githooks/`, armed by `core.hooksPath`) refuse a push that would be
+recorded under the wrong account. They check separate things, and each fails on its own:
+
+| Check | Config | Refuses |
+|---|---|---|
+| `dev/authorcheck` | `hooks.authorEmail` | a commit whose author or committer is not the pinned address |
+| `dev/pushcheck` | `hooks.remoteHost` | a push whose effective URL does not go through the pinned SSH host alias |
+
+The second exists because git identity and SSH identity are **different things**. A commit
+can read `Ion Alpha <contact@ionalpha.io>` while the push that carries it authenticates with
+whatever key the transport picked, and GitHub then attributes the push, the merge, and the
+branch deletion to *that key's* account. Nothing in git warns about this, because from git's
+point of view nothing is wrong.
+
+`gh repo clone` is the usual way in: it writes a plain `git@github.com:org/repo.git` remote,
+which resolves to whichever key `Host github.com` names in `~/.ssh/config`. The durable fix is
+a URL rewrite, so every clone of the org is forced onto the right alias no matter who or what
+created it:
+
+```sh
+git config --global url."github-org:org/".insteadOf "git@github.com:org/"
+git config --global url."github-org:org/".insteadOf "https://github.com/org/"
+```
+
+Both settings are unset by default, and unset means the hooks do nothing: an outside
+contributor commits under their own name and pushes to their own fork, as they should.
+
 ## Repo-specific rules
 
 This config holds only rules that apply to **every** ionalpha Go module. A repo with its own
