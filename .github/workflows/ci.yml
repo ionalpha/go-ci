@@ -1,0 +1,26 @@
+name: CI
+
+# go-ci holds Go code of its own now (relkit, the monorepo release tool), so it runs the
+# same shared gate it hands to every other repo. Nothing here is special-cased: if the
+# gate is good enough for flynn, it is good enough for the tool that releases flynn's
+# extensions.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  go:
+    uses: ./.github/workflows/go-ci.yml
+    with:
+      # The workflow and the config it loads are the ones in this very commit, so a
+      # change to either is tested by the PR that makes it.
+      ci-ref: ${{ github.sha }}

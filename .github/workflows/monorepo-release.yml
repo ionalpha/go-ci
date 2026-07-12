@@ -1,0 +1,114 @@
+name: Monorepo release (reusable)
+
+# Releases one component of a Go monorepo, selected by the tag that triggered the caller.
+#
+# A repo that ships several binaries cannot version them together: an extension that has
+# not changed should not get a new version because a sibling did. So each component is
+# tagged on its own timeline as "<component>/vX.Y.Z", and this workflow builds, signs and
+# publishes exactly the component named in the tag. relkit (in this repo) does the work;
+# the workflow's own job is to supply a clean checkout, pinned tools, and the OIDC token
+# that keyless signing needs.
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        description: Go toolchain version.
+        type: string
+        default: "1.26"
+      ci-ref:
+        description: Ref of ionalpha/go-ci to build relkit from. Pin it to the workflow ref you call.
+        type: string
+        default: main
+      sbom:
+        description: Write a CycloneDX SBOM per archive. Covered by the release signature.
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  release:
+    name: Release ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload its assets
+      id-token: write # keyless cosign signing via OIDC
+      attestations: write # SLSA build provenance
+    steps:
+      # Full history: the changelog spans this component's own previous release, which
+      # means every tag and every commit between them has to be present.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      # relkit is built from source at a pinned ref rather than installed from a proxy,
+      # so the release tool that runs is exactly the one in the ref this workflow came
+      # from. There is no floating version that could change what a tag publishes.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: ionalpha/go-ci
+          ref: ${{ inputs.ci-ref }}
+          path: .go-ci
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ inputs.go-version }}
+          check-latest: true
+          cache: true
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          # Pin cosign to the 2.x line. cosign 3 makes the new bundle format the default
+          # and ignores --output-signature/--output-certificate, so it would produce no
+          # detached .sig and .pem for a consumer to verify the checksums against.
+          cosign-release: "v2.6.3"
+
+      - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          # Pinned, so an SBOM tool upgrade cannot change or break a release.
+          syft-version: "v1.46.0"
+
+      - name: Build relkit
+        run: |
+          cd .go-ci
+          go build -o "$RUNNER_TEMP/relkit" ./cmd/relkit
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # The manifest is validated before anything is built, so a release cannot be the
+      # first place a bad manifest is noticed.
+      - name: Validate the release manifest
+        run: relkit validate
+
+      # relkit resolves the tag against the manifest, cross-compiles the component,
+      # packs reproducible archives, writes a checksums.txt that commits to every
+      # artifact by digest, signs that one file with keyless cosign, and publishes the
+      # GitHub release with a changelog scoped to the component's own import graph.
+      - name: Build, sign and publish
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: relkit release --tag "$GITHUB_REF_NAME" --sbom=${{ inputs.sbom }}
+
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+
+      - name: Attach provenance to the release
+        # attest-build-provenance stores the attestation in GitHub's attestation store,
+        # which the OpenSSF Scorecard signed-releases check does not read: it scans
+        # release assets by name. Attaching the bundle as a *.intoto.jsonl asset puts it
+        # where that check, and any downstream verifier, will actually look.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE" provenance.intoto.jsonl
+          gh release upload "$GITHUB_REF_NAME" provenance.intoto.jsonl --clobber

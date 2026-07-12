@@ -1,0 +1,79 @@
+name: Monorepo release check (reusable)
+
+# The pull-request half of the monorepo release setup. It gates the manifest that the
+# release workflow will later trust, and reports which components a change would require
+# a new release of.
+#
+# The gate matters because the manifest is the only thing standing between "a new binary
+# was added" and "a new binary ships unsigned and unversioned": relkit fails validation if
+# a command exists under cmd/ that no component declares. Catching that on the PR is free;
+# catching it at tag time means a broken release.
+on:
+  workflow_call:
+    inputs:
+      go-version:
+        description: Go toolchain version.
+        type: string
+        default: "1.26"
+      ci-ref:
+        description: Ref of ionalpha/go-ci to build relkit from. Pin it to the workflow ref you call.
+        type: string
+        default: main
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    name: Release manifest
+    runs-on: ubuntu-latest
+    steps:
+      # Tags are needed to compare each component against its own last release.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          repository: ionalpha/go-ci
+          ref: ${{ inputs.ci-ref }}
+          path: .go-ci
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: ${{ inputs.go-version }}
+          check-latest: true
+          cache: true
+
+      - name: Build relkit
+        run: |
+          cd .go-ci
+          go build -o "$RUNNER_TEMP/relkit" ./cmd/relkit
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      - name: Every command is declared, and every component builds
+        run: relkit validate
+
+      # Not a gate, a report: it tells a reviewer which components this branch would
+      # oblige them to release, including the ones pulled in through a shared package
+      # they did not touch directly.
+      - name: Components with unreleased changes
+        run: |
+          {
+            echo '### Components with unreleased changes'
+            echo
+            if [ "$(relkit changed --only-changed | jq 'length')" = "0" ]; then
+              echo 'None: every component is up to date with its last release tag.'
+            else
+              echo '| Component | Last release |'
+              echo '|---|---|'
+              relkit changed --only-changed |
+                jq -r '.[] | "| \(.name) | \(.released // "never released")" + " |"'
+              echo
+              echo 'Tag each as `<component>/vX.Y.Z` to release it.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
