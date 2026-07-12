@@ -145,6 +145,52 @@ func TestVersionCompare(t *testing.T) {
 	}
 }
 
+// TestSignerRepo pins the identity-to-signer mapping the release notes depend on. The
+// signer is the repo hosting the workflow, which for a reusable workflow is NOT the repo
+// being released; a verifier told the wrong one rejects a perfectly good attestation.
+func TestSignerRepo(t *testing.T) {
+	t.Parallel()
+	for in, want := range map[string]string{
+		"https://github.com/ionalpha/go-ci/.github/workflows/monorepo-release.yml@refs/heads/main": "ionalpha/go-ci",
+		"https://github.com/o/r/.github/workflows/release.yml@refs/tags/token/v0.1.0":              "o/r",
+		"https://gitlab.com/o/r/x@refs/heads/main":                                                 "",
+		"https://github.com/onlyowner":                                                             "",
+		"":                                                                                         "",
+	} {
+		if got := SignerRepo(in); got != want {
+			t.Errorf("SignerRepo(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestRenderedVerifyCommands pins the commands a consumer is actually told to run. They are
+// the whole point of signing: if they are wrong, a correct release looks broken and people
+// learn to skip verification.
+func TestRenderedVerifyCommands(t *testing.T) {
+	t.Parallel()
+	tag, err := ParseTag("token/v0.1.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const identity = "https://github.com/ionalpha/go-ci/.github/workflows/monorepo-release.yml@refs/heads/main"
+	body := Changelog{}.Render("ionalpha/flynn-extensions", tag, identity)
+
+	for _, want := range []string{
+		// cosign must be told the identity from the certificate, and the issuer.
+		`--certificate-identity "` + identity + `"`,
+		`--certificate-oidc-issuer "` + OIDCIssuer + `"`,
+		// The attestation is signed by the reusable workflow's repo, so a verifier
+		// given only --repo rejects a valid attestation. Both flags must be present.
+		"--repo ionalpha/flynn-extensions",
+		"--signer-repo ionalpha/go-ci",
+		"sha256sum --check --ignore-missing checksums.txt",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("release notes are missing %q\n\n%s", want, body)
+		}
+	}
+}
+
 func TestVersionIsPrerelease(t *testing.T) {
 	t.Parallel()
 	for in, want := range map[string]bool{

@@ -169,5 +169,19 @@ func (c Changelog) Render(repo string, t Tag, identity string) string {
 	b.WriteString("\n```\n\n")
 	b.WriteString("Then check the archive you downloaded against it:\n\n")
 	b.WriteString("```sh\nsha256sum --check --ignore-missing checksums.txt\n```\n")
+
+	// The build provenance is a separate statement with a separate verifier, and its
+	// signer is the workflow's repo, not the released one. Spelling that out here is the
+	// difference between a command that works and one that rejects a valid attestation.
+	if signer := SignerRepo(identity); signer != "" && repo != "" {
+		b.WriteString("\nEach archive also carries SLSA build provenance: a signed statement of which ")
+		b.WriteString("workflow built it, from which commit.\n\n")
+		fmt.Fprintf(&b, "```sh\ngh attestation verify <archive> \\\n  --repo %s \\\n  --signer-repo %s\n```\n",
+			repo, signer)
+		if signer != repo {
+			fmt.Fprintf(&b, "\n`--signer-repo` is required because the release is built by a reusable workflow "+
+				"in `%s`, so that is the identity Sigstore binds the signature to, not `%s`.\n", signer, repo)
+		}
+	}
 	return b.String()
 }

@@ -118,6 +118,28 @@ func CertificateIdentity(certPath string) (string, error) {
 // string from some other issuer would satisfy the check.
 const OIDCIssuer = "https://token.actions.githubusercontent.com"
 
+// SignerRepo extracts the "owner/repo" that signed a release from the identity bound into
+// its certificate, e.g. "ionalpha/go-ci" from
+//
+//	https://github.com/ionalpha/go-ci/.github/workflows/monorepo-release.yml@refs/heads/main
+//
+// It is not the repo being released. When the release runs through a reusable workflow,
+// the signer is the repo that *hosts* that workflow, and a verifier that assumes otherwise
+// fails: `gh attestation verify --repo <released>` rejects a perfectly good attestation
+// unless it is also told `--signer-repo <this>`. Deriving it from the certificate keeps the
+// published command correct without anyone having to remember that.
+func SignerRepo(identity string) string {
+	rest, ok := strings.CutPrefix(identity, "https://github.com/")
+	if !ok {
+		return ""
+	}
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
+		return ""
+	}
+	return parts[0] + "/" + parts[1]
+}
+
 // VerifyCommand is the exact cosign invocation a consumer runs to verify a release,
 // rendered into the release notes. The identity comes from the certificate that was just
 // issued, so the published instructions always match the signature that was actually made.
